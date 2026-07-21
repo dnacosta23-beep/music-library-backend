@@ -29,15 +29,48 @@ CORS(
                 "http://localhost:5174",
                 "http://127.0.0.1:5173",
                 "http://127.0.0.1:5174",
+                "https://music-library-frontend.onrender.com",
             ]
         }
     },
 )
 
 
-# Get the Supabase information from the .env file
-supabase_url = os.getenv("VITE_SUPABASE_URL")
-supabase_key = os.getenv("VITE_SUPABASE_PUBLISHABLE_KEY")
+# Get the Supabase information from environment variables
+supabase_url = os.getenv("VITE_SUPABASE_URL", "").strip().rstrip("/")
+supabase_key = os.getenv(
+    "VITE_SUPABASE_PUBLISHABLE_KEY",
+    "",
+).strip()
+
+
+if not supabase_url or not supabase_key:
+    raise RuntimeError(
+        "Supabase environment variables are missing."
+    )
+
+
+if not supabase_url.startswith("https://"):
+    raise RuntimeError(
+        "The Supabase URL must begin with https://"
+    )
+
+
+if not supabase_url.endswith(".supabase.co"):
+    raise RuntimeError(
+        "The Supabase URL must end with .supabase.co. "
+        f"Current URL host: {supabase_url}"
+    )
+
+
+print("Supabase URL loaded:", supabase_url)
+print("Supabase key loaded:", bool(supabase_key))
+
+
+supabase = create_client(
+    supabase_url,
+    supabase_key,
+)
 
 
 # Stop the application if the Supabase variables are missing
@@ -65,15 +98,24 @@ def home():
 # READ: Get all songs
 @app.route("/songs", methods=["GET"])
 def get_songs():
-    response = (
-        supabase
-        .table("songs")
-        .select("*")
-        .order("created_at", desc=True)
-        .execute()
-    )
+    try:
+        response = (
+            supabase
+            .table("songs")
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+        )
 
-    return jsonify(response.data)
+        return jsonify(response.data), 200
+
+    except Exception as error:
+        app.logger.exception("Unable to retrieve songs")
+
+        return jsonify({
+            "error": "Unable to retrieve songs.",
+            "details": str(error),
+        }), 500
 
 
 # CREATE: Add a new song
