@@ -6,7 +6,7 @@ from flask_cors import CORS
 from supabase import create_client
 
 
-# Load variables from the .env file
+# Load variables from the local .env file
 load_dotenv()
 
 
@@ -14,12 +14,14 @@ load_dotenv()
 app = Flask(__name__)
 
 
-# Allow the React frontend to communicate with Flask
+# Get the deployed frontend URL from the environment
 frontend_url = os.getenv(
     "FRONTEND_URL",
     "http://localhost:5173",
-)
+).strip().rstrip("/")
 
+
+# Allow the local and deployed React frontends to communicate with Flask
 CORS(
     app,
     resources={
@@ -29,27 +31,33 @@ CORS(
                 "http://localhost:5174",
                 "http://127.0.0.1:5173",
                 "http://127.0.0.1:5174",
-                "https://music-library-frontend.onrender.com",
+                frontend_url,
             ]
         }
     },
 )
 
 
-# Get the Supabase information from environment variables
-supabase_url = os.getenv("VITE_SUPABASE_URL", "").strip().rstrip("/")
+# Get the Supabase project URL and publishable key
+supabase_url = os.getenv(
+    "VITE_SUPABASE_URL",
+    "",
+).strip().rstrip("/")
+
 supabase_key = os.getenv(
     "VITE_SUPABASE_PUBLISHABLE_KEY",
     "",
 ).strip()
 
 
+# Stop the app if the Supabase variables are missing
 if not supabase_url or not supabase_key:
     raise RuntimeError(
         "Supabase environment variables are missing."
     )
 
 
+# Confirm that the Supabase URL has the correct format
 if not supabase_url.startswith("https://"):
     raise RuntimeError(
         "The Supabase URL must begin with https://"
@@ -59,25 +67,15 @@ if not supabase_url.startswith("https://"):
 if not supabase_url.endswith(".supabase.co"):
     raise RuntimeError(
         "The Supabase URL must end with .supabase.co. "
-        f"Current URL host: {supabase_url}"
+        f"Current value: {supabase_url}"
     )
 
 
+# Safe debugging messages
+# This prints the URL, but it does not print the secret key
 print("Supabase URL loaded:", supabase_url)
 print("Supabase key loaded:", bool(supabase_key))
-
-
-supabase = create_client(
-    supabase_url,
-    supabase_key,
-)
-
-
-# Stop the application if the Supabase variables are missing
-if not supabase_url or not supabase_key:
-    raise RuntimeError(
-        "SUPABASE_URL and SUPABASE_KEY must be added to the .env file."
-    )
+print("Frontend URL loaded:", frontend_url)
 
 
 # Connect Flask to Supabase
@@ -87,12 +85,12 @@ supabase = create_client(
 )
 
 
-# Home route
-@app.route("/")
+# HOME: Confirm that the API is running
+@app.route("/", methods=["GET"])
 def home():
     return jsonify({
         "message": "Music Library API is running."
-    })
+    }), 200
 
 
 # READ: Get all songs
@@ -121,139 +119,170 @@ def get_songs():
 # CREATE: Add a new song
 @app.route("/songs", methods=["POST"])
 def add_song():
-    data = request.get_json()
-
-    if not data:
-        return jsonify({
-            "error": "Song information is required."
-        }), 400
-
-    title = data.get("title", "").strip()
-    artist = data.get("artist", "").strip()
-    genre = data.get("genre", "").strip()
-    rating = data.get("rating")
-
-    if not title:
-        return jsonify({
-            "error": "Title is required."
-        }), 400
-
-    if not artist:
-        return jsonify({
-            "error": "Artist is required."
-        }), 400
-
     try:
-        rating = int(rating)
-    except (TypeError, ValueError):
+        data = request.get_json()
+
+        if not data:
+            return jsonify({
+                "error": "Song information is required."
+            }), 400
+
+        title = data.get("title", "").strip()
+        artist = data.get("artist", "").strip()
+        genre = data.get("genre", "").strip()
+        rating = data.get("rating")
+
+        if not title:
+            return jsonify({
+                "error": "Title is required."
+            }), 400
+
+        if not artist:
+            return jsonify({
+                "error": "Artist is required."
+            }), 400
+
+        try:
+            rating = int(rating)
+        except (TypeError, ValueError):
+            return jsonify({
+                "error": "Rating must be a number from 1 to 5."
+            }), 400
+
+        if rating < 1 or rating > 5:
+            return jsonify({
+                "error": "Rating must be between 1 and 5."
+            }), 400
+
+        new_song = {
+            "title": title,
+            "artist": artist,
+            "genre": genre,
+            "rating": rating,
+        }
+
+        response = (
+            supabase
+            .table("songs")
+            .insert(new_song)
+            .execute()
+        )
+
+        if not response.data:
+            return jsonify({
+                "error": "The song could not be created."
+            }), 500
+
+        return jsonify(response.data[0]), 201
+
+    except Exception as error:
+        app.logger.exception("Unable to create song")
+
         return jsonify({
-            "error": "Rating must be a number from 1 to 5."
-        }), 400
-
-    if rating < 1 or rating > 5:
-        return jsonify({
-            "error": "Rating must be between 1 and 5."
-        }), 400
-
-    new_song = {
-        "title": title,
-        "artist": artist,
-        "genre": genre,
-        "rating": rating,
-    }
-
-    response = (
-        supabase
-        .table("songs")
-        .insert(new_song)
-        .execute()
-    )
-
-    return jsonify(response.data[0]), 201
+            "error": "Unable to create song.",
+            "details": str(error),
+        }), 500
 
 
 # UPDATE: Edit an existing song
 @app.route("/songs/<int:song_id>", methods=["PUT"])
 def update_song(song_id):
-    data = request.get_json()
-
-    if not data:
-        return jsonify({
-            "error": "Updated song information is required."
-        }), 400
-
-    title = data.get("title", "").strip()
-    artist = data.get("artist", "").strip()
-    genre = data.get("genre", "").strip()
-    rating = data.get("rating")
-
-    if not title:
-        return jsonify({
-            "error": "Title is required."
-        }), 400
-
-    if not artist:
-        return jsonify({
-            "error": "Artist is required."
-        }), 400
-
     try:
-        rating = int(rating)
-    except (TypeError, ValueError):
+        data = request.get_json()
+
+        if not data:
+            return jsonify({
+                "error": "Updated song information is required."
+            }), 400
+
+        title = data.get("title", "").strip()
+        artist = data.get("artist", "").strip()
+        genre = data.get("genre", "").strip()
+        rating = data.get("rating")
+
+        if not title:
+            return jsonify({
+                "error": "Title is required."
+            }), 400
+
+        if not artist:
+            return jsonify({
+                "error": "Artist is required."
+            }), 400
+
+        try:
+            rating = int(rating)
+        except (TypeError, ValueError):
+            return jsonify({
+                "error": "Rating must be a number from 1 to 5."
+            }), 400
+
+        if rating < 1 or rating > 5:
+            return jsonify({
+                "error": "Rating must be between 1 and 5."
+            }), 400
+
+        updated_song = {
+            "title": title,
+            "artist": artist,
+            "genre": genre,
+            "rating": rating,
+        }
+
+        response = (
+            supabase
+            .table("songs")
+            .update(updated_song)
+            .eq("id", song_id)
+            .execute()
+        )
+
+        if not response.data:
+            return jsonify({
+                "error": "Song not found."
+            }), 404
+
+        return jsonify(response.data[0]), 200
+
+    except Exception as error:
+        app.logger.exception("Unable to update song")
+
         return jsonify({
-            "error": "Rating must be a number from 1 to 5."
-        }), 400
-
-    if rating < 1 or rating > 5:
-        return jsonify({
-            "error": "Rating must be between 1 and 5."
-        }), 400
-
-    updated_song = {
-        "title": title,
-        "artist": artist,
-        "genre": genre,
-        "rating": rating,
-    }
-
-    response = (
-        supabase
-        .table("songs")
-        .update(updated_song)
-        .eq("id", song_id)
-        .execute()
-    )
-
-    if not response.data:
-        return jsonify({
-            "error": "Song not found."
-        }), 404
-
-    return jsonify(response.data[0])
+            "error": "Unable to update song.",
+            "details": str(error),
+        }), 500
 
 
 # DELETE: Remove a song
 @app.route("/songs/<int:song_id>", methods=["DELETE"])
 def delete_song(song_id):
-    response = (
-        supabase
-        .table("songs")
-        .delete()
-        .eq("id", song_id)
-        .execute()
-    )
+    try:
+        response = (
+            supabase
+            .table("songs")
+            .delete()
+            .eq("id", song_id)
+            .execute()
+        )
 
-    if not response.data:
+        if not response.data:
+            return jsonify({
+                "error": "Song not found."
+            }), 404
+
         return jsonify({
-            "error": "Song not found."
-        }), 404
+            "message": "Song deleted successfully."
+        }), 200
 
-    return jsonify({
-        "message": "Song deleted successfully."
-    })
+    except Exception as error:
+        app.logger.exception("Unable to delete song")
+
+        return jsonify({
+            "error": "Unable to delete song.",
+            "details": str(error),
+        }), 500
 
 
-# Run the Flask development server
+# Run the Flask development server locally
 if __name__ == "__main__":
     app.run(debug=True)
-
